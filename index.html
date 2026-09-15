@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Visualizador de Logs do GitHub Copilot / IA</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Marked.js para renderizar Markdown das respostas -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- Highlight.js para blocos de código -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .prose pre { padding: 0.85rem; border-radius: 0.5rem; background-color: #1e1e2e; }
+    .prose code { color: #f38ba8; font-size: 0.875em; }
+    .prose pre code { color: inherit; font-size: 0.85em; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
+
+  <!-- Top Header -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
+        UX
+      </div>
+      <div>
+        <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+          Visualizador de Interações UX & IA
+          <span id="badge-count" class="text-xs bg-slate-800 text-slate-300 font-mono px-2 py-0.5 rounded-full border border-slate-700">0 logs</span>
+        </h1>
+        <p class="text-xs text-slate-400">Inspeção visual e auditoria acadêmica de prompts e respostas do Copilot</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-3 flex-wrap">
+      <label class="cursor-pointer inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md shadow-indigo-600/20">
+        <span>Carregar Arquivo JSON</span>
+        <input type="file" id="file-input" accept=".json" class="hidden">
+      </label>
+
+      <button id="export-md-btn" class="inline-flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold px-3 py-2 rounded-lg transition">
+        Copiar Markdown Limpo
+      </button>
+    </div>
+  </header>
+
+  <!-- Filtros -->
+  <section class="bg-slate-900 border-b border-slate-800 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-4 flex-1 min-w-[280px]">
+      <input type="text" id="search-input" placeholder="Pesquisar por texto, termo ou comando..."
+        class="w-full max-w-md bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500">
+      
+      <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+        <input type="checkbox" id="filter-chat-only" checked class="rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0">
+        <span>Ocultar telemetria interna (Ghost/NES)</span>
+      </label>
+    </div>
+    <div id="stats-summary" class="text-xs text-slate-400 flex items-center gap-4 font-mono"></div>
+  </section>
+
+  <!-- Corpo Principal -->
+  <div class="flex-1 flex overflow-hidden">
+    <aside class="w-80 border-r border-slate-800 bg-slate-950/60 overflow-y-auto p-4 flex flex-col gap-2 shrink-0 hidden md:flex" id="sidebar-list">
+      <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider px-2 mb-1">Turnos de Conversa</div>
+    </aside>
+
+    <main class="flex-1 overflow-y-auto p-6 flex flex-col gap-6" id="main-stream">
+      <div id="drop-zone" class="border-2 border-dashed border-slate-800 rounded-2xl p-12 text-center my-auto flex flex-col items-center justify-center cursor-pointer hover:border-indigo-500/50 hover:bg-slate-900/30 transition">
+        <h3 class="text-base font-semibold text-slate-200 mb-1">Arraste seu arquivo JSON aqui</h3>
+        <p class="text-xs text-slate-400 max-w-sm">Ou clique em "Carregar Arquivo JSON" para visualizar a conversa formatada.</p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let logData = null;
+
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+          return hljs.highlight(code, { language: lang }).value;
+        }
+        return hljs.highlightAuto(code).value;
+      },
+      breaks: true
+    });
+
+    const fileInput = document.getElementById('file-input');
+    const searchInput = document.getElementById('search-input');
+    const filterChatOnly = document.getElementById('filter-chat-only');
+    const sidebarList = document.getElementById('sidebar-list');
+    const mainStream = document.getElementById('main-stream');
+    const badgeCount = document.getElementById('badge-count');
+    const statsSummary = document.getElementById('stats-summary');
+    const exportMdBtn = document.getElementById('export-md-btn');
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length) processFile(e.target.files[0]);
+    });
+
+    window.addEventListener('dragover', (e) => { e.preventDefault(); });
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length) processFile(e.dataTransfer.files[0]);
+    });
+
+    function processFile(file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          logData = JSON.parse(event.target.result);
+          renderDashboard();
+        } catch (err) {
+          alert('Erro ao carregar JSON: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    function isChatInteraction(item) {
+      const promptText = (item.prompt || '').trim();
+      return !promptText.startsWith('Ghost |') && !promptText.startsWith('NES |');
+    }
+
+    function renderDashboard() {
+      if (!logData || !logData.prompts) return;
+
+      const chatOnly = filterChatOnly.checked;
+      const query = searchInput.value.toLowerCase().trim();
+
+      const items = logData.prompts.filter(item => {
+        if (chatOnly && !isChatInteraction(item)) return false;
+        if (!query) return true;
+        const promptMatch = (item.prompt || '').toLowerCase().includes(query);
+        const responseMatch = (item.logs || []).some(log => {
+          const resp = Array.isArray(log.response?.message) ? log.response.message.join(' ') : (log.content || '');
+          return resp.toLowerCase().includes(query);
+        });
+        return promptMatch || responseMatch;
+      });
+
+      badgeCount.textContent = `${items.length} itens`;
+
+      renderSidebar(items);
+      renderStream(items);
+    }
+
+    function renderSidebar(items) {
+      sidebarList.innerHTML = '<div class="text-xs font-semibold text-slate-400 uppercase tracking-wider px-2 mb-1">Turnos de Conversa</div>';
+      items.forEach((item, index) => {
+        const btn = document.createElement('button');
+        btn.className = "w-full text-left p-2.5 rounded-lg border border-slate-800/80 bg-slate-900/40 hover:bg-slate-800 transition flex flex-col gap-1 text-xs";
+        btn.innerHTML = `
+          <div class="flex items-center justify-between w-full">
+            <span class="font-semibold text-slate-300">#${index + 1}</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-900/60 text-indigo-300">Prompt</span>
+          </div>
+          <div class="truncate text-slate-400 font-medium">${escapeHtml(item.prompt || '')}</div>
+        `;
+        btn.onclick = () => {
+          document.getElementById(`prompt-card-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        };
+        sidebarList.appendChild(btn);
+      });
+    }
+
+    function renderStream(items) {
+      mainStream.innerHTML = '';
+      items.forEach((item, index) => {
+        const card = document.createElement('div');
+        card.id = `prompt-card-${index}`;
+        card.className = "border border-slate-800 bg-slate-900/60 rounded-2xl p-6 shadow-xl flex flex-col gap-5";
+
+        const log = (item.logs && item.logs[0]) || {};
+        const meta = log.metadata || {};
+        const model = meta.model || 'copilot-model';
+        const duration = meta.duration ? `${(meta.duration / 1000).toFixed(2)}s` : '';
+
+        let responseContent = '';
+        if (log.response?.message) {
+          responseContent = Array.isArray(log.response.message) ? log.response.message.join('\n\n') : log.response.message;
+        } else if (log.content) {
+          responseContent = log.content;
+        }
+
+        card.innerHTML = `
+          <div class="flex items-start gap-4">
+            <div class="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center font-bold text-xs text-white shrink-0">U</div>
+            <div class="flex-1">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs font-semibold text-emerald-400">Prompt do Pesquisador</span>
+                <span class="text-[11px] font-mono text-slate-500">#${index + 1}</span>
+              </div>
+              <div class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-slate-100 text-sm font-medium leading-relaxed">
+                ${escapeHtml(item.prompt)}
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-start gap-4 pt-2 border-t border-slate-800/60">
+            <div class="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center font-bold text-xs text-white shrink-0">IA</div>
+            <div class="flex-1 overflow-hidden">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-semibold text-indigo-400">Resposta da IA <span class="ml-2 font-mono text-[10px] text-slate-400 px-1.5 py-0.5 rounded bg-slate-800">${model}</span></span>
+                <span class="text-[11px] font-mono text-slate-500">${duration}</span>
+              </div>
+              <div class="prose prose-invert max-w-none text-slate-200 text-sm leading-relaxed">
+                ${marked.parse(responseContent || '_Sem resposta de texto_')}
+              </div>
+            </div>
+          </div>
+        `;
+        mainStream.appendChild(card);
+      });
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    searchInput.addEventListener('input', renderDashboard);
+    filterChatOnly.addEventListener('change', renderDashboard);
+
+    exportMdBtn.addEventListener('click', () => {
+      if (!logData || !logData.prompts) return alert('Carregue um arquivo JSON primeiro!');
+      const chatItems = logData.prompts.filter(isChatInteraction);
+      let md = `# Registro de Interações com IA - Pesquisa UX\n\n`;
+      chatItems.forEach((it, i) => {
+        const resp = it.logs?.[0]?.response?.message;
+        const respText = Array.isArray(resp) ? resp.join('\n\n') : (resp || it.logs?.[0]?.content || '');
+        md += `### Interação ${i + 1}\n\n**👤 Prompt do Pesquisador:**\n> ${it.prompt}\n\n**🤖 Resposta da IA:**\n\n${respText}\n\n---\n\n`;
+      });
+      navigator.clipboard.writeText(md).then(() => alert('Markdown copiado para a área de transferência!'));
+    });
+  </script>
+</body>
+</html>
